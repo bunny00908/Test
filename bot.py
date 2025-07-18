@@ -98,6 +98,11 @@ async def get_group_id_callback(client, callback_query):
 async def handle_group_id_submission(client, message: Message):
     group_id = int(message.text)
     
+    # Check if this is actually a group
+    if not await is_group(group_id):
+        await message.reply("❌ The ID you provided is not a valid group. Please provide a group ID.")
+        return
+    
     # Notify user
     await message.reply("✅ Your group ID has been sent to the admin. Please wait for manual approval.")
     
@@ -123,7 +128,7 @@ async def add_source_group(client, message: Message):
     try:
         group_id = int(message.command[1])
         if not await is_group(group_id):
-            await message.reply("❌ This ID is not a group. Please provide a group ID.")
+            await message.reply("❌ This ID is not a valid group. Please provide a group ID.")
             return
             
         if group_id not in SOURCE_GROUPS:
@@ -158,7 +163,7 @@ async def add_target_group(client, message: Message):
     try:
         group_id = int(message.command[1])
         if not await is_group(group_id):
-            await message.reply("❌ This ID is not a group. Please provide a group ID.")
+            await message.reply("❌ This ID is not a valid group. Please provide a group ID.")
             return
             
         if group_id not in TARGET_GROUPS:
@@ -235,6 +240,55 @@ async def remove_target_group(client, message: Message):
     except ValueError:
         await message.reply("❌ Invalid group ID. Please provide a numeric ID.")
 
+# New admin commands to reply to users by ID
+@app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
+async def reply_to_user(client, message: Message):
+    if len(message.command) < 3:
+        await message.reply("Usage: /reply <user_id> <message>")
+        return
+    
+    try:
+        user_id = int(message.command[1])
+        reply_text = " ".join(message.command[2:])
+        
+        try:
+            await app.send_message(user_id, f"📨 Admin Reply:\n\n{reply_text}")
+            await message.reply(f"✅ Message sent to user {user_id}")
+        except Exception as e:
+            await message.reply(f"❌ Failed to send message to user {user_id}: {str(e)}")
+    except ValueError:
+        await message.reply("❌ Invalid user ID. Please provide a numeric ID.")
+
+@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast_message(client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Usage: /broadcast <message>")
+        return
+    
+    broadcast_text = " ".join(message.command[1:])
+    total_users = len(SOURCE_GROUPS) + len(TARGET_GROUPS)
+    sent_count = 0
+    
+    processing_msg = await message.reply(f"📢 Broadcasting to {total_users} groups...")
+    
+    # Send to source groups
+    for group_id in SOURCE_GROUPS:
+        try:
+            await app.send_message(group_id, f"📢 Admin Broadcast:\n\n{broadcast_text}")
+            sent_count += 1
+        except Exception as e:
+            logging.error(f"Error broadcasting to source group {group_id}: {e}")
+    
+    # Send to target groups
+    for group_id in TARGET_GROUPS:
+        try:
+            await app.send_message(group_id, f"📢 Admin Broadcast:\n\n{broadcast_text}")
+            sent_count += 1
+        except Exception as e:
+            logging.error(f"Error broadcasting to target group {group_id}: {e}")
+    
+    await processing_msg.edit_text(f"✅ Broadcast completed!\n\nSuccessfully sent to {sent_count}/{total_users} groups.")
+
 # ========== Main CC Scraper ==========
 @app.on_message(filters.chat(SOURCE_GROUPS))
 async def cc_scraper(client, message: Message):
@@ -280,7 +334,7 @@ async def new_chat_members(client, message: Message):
             "👋 Thanks for adding me to this group!\n\n"
             "To start using this bot:\n"
             "1. Make me admin\n"
-            "2. Send the group ID \n"
+            "2. Send the group ID to @approvedccm_bot\n"
             "3. Only admins can post CCs that will be forwarded\n\n"
             "Use /id to get this group's ID"
         )
