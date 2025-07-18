@@ -113,10 +113,10 @@ async def get_group_id_cb(client, callback_query):
     )
 
 # =========== Receive Group ID ===========
-@app.on_message(filters.private)
+@app.on_message(filters.private & ~filters.command(["start", "add_target", "remove_target", "list_chats", "contact"]))
 async def receive_group_id(client, message: Message):
     text = message.text.strip()
-    if text.startswith("/") or len(text.split()) > 3:
+    if len(text.split()) > 3:
         return
 
     match = re.fullmatch(r"-100\d{10,}", text)
@@ -160,7 +160,7 @@ async def add_target_command(client, message: Message):
 
     try:
         chat_id = int(args[1])
-        if chat_id > 0:
+        if chat_id > 0 and not str(chat_id).startswith("-100"):
             return await message.reply("❌ Use a negative chat ID (e.g., -100...).")
         if chat_id not in TARGET_CHANNELS:
             TARGET_CHANNELS.append(chat_id)
@@ -172,6 +172,8 @@ async def add_target_command(client, message: Message):
                 logging.warning(f"Could not notify {chat_id}: {e}")
         else:
             await message.reply("⚠️ Already in target channels.")
+    except ValueError:
+        await message.reply("❗ Invalid chat ID. Please provide a numeric value.")
     except Exception as e:
         logging.error(f"Error in /add_target: {e}")
         await message.reply(f"❌ Error: {e}")
@@ -180,6 +182,7 @@ async def add_target_command(client, message: Message):
 async def remove_target_command(client, message: Message):
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
+    
     args = message.text.split()
     if len(args) != 2:
         return await message.reply("❗ Usage: /remove_target <chat_id>")
@@ -191,7 +194,9 @@ async def remove_target_command(client, message: Message):
             save_target_channels()
             await message.reply(f"✅ Removed <code>{chat_id}</code>.", parse_mode=ParseMode.HTML)
         else:
-            await message.reply("⚠️ Chat not found.")
+            await message.reply("⚠️ Chat not found in target channels.")
+    except ValueError:
+        await message.reply("❗ Invalid chat ID. Please provide a numeric value.")
     except Exception as e:
         logging.error(f"Error in /remove_target: {e}")
         await message.reply(f"❌ Error: {e}")
@@ -200,8 +205,10 @@ async def remove_target_command(client, message: Message):
 async def list_chats_command(client, message: Message):
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
+    
     if not TARGET_CHANNELS:
         return await message.reply("📭 No target channels.")
+    
     await message.reply(
         "📋 Target Channels:\n" + "\n".join([f"<code>{cid}</code>" for cid in TARGET_CHANNELS]),
         parse_mode=ParseMode.HTML
@@ -211,6 +218,7 @@ async def list_chats_command(client, message: Message):
 async def contact_user(client, message: Message):
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
+    
     args = message.text.split(maxsplit=2)
     if len(args) < 3:
         return await message.reply("❗ Usage: /contact <user_id> <message>")
@@ -219,7 +227,9 @@ async def contact_user(client, message: Message):
         user_id = int(args[1])
         msg = args[2]
         await client.send_message(user_id, f"📩 Message from Admin:\n{msg}")
-        await message.reply("✅ Sent.")
+        await message.reply("✅ Message sent.")
+    except ValueError:
+        await message.reply("❗ Invalid user ID. Please provide a numeric value.")
     except Exception as e:
         logging.error(f"Error in contact: {e}")
         await message.reply(f"❌ Error: {e}")
