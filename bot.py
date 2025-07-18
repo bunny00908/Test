@@ -12,26 +12,23 @@ API_HASH = "82e6373f14a917289086553eefc64afe"
 BOT_TOKEN = "7673804034:AAFU7Wh8ejap55mwTiqV-2OwFLldRJ_xp8o"
 
 SOURCE_GROUPS = [-1002854404728]
-TARGET_CHANNELS = []
-ADMIN_ID = 5387926427  # Replace with your Telegram numeric user ID
+TARGET_CHANNELS = {}  # Using set for easier management
+ADMIN_ID = 5387926427  # Your Telegram numeric user ID
 # =====================================
 
 logging.basicConfig(level=logging.INFO)
 app = Client("cc_scraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ========= DB-like in-memory (optional persistence) =========
-target_channels = set(TARGET_CHANNELS)
-
-# ========= Credit Card Extractor =========
+# ========== CC Extractor ==========
 def extract_credit_cards(text):
     pattern = r'(\d{13,19})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})'
     return re.findall(pattern, text or "")
 
 def format_card_message(cc):
     card_number, month, year, cvv = cc
-    return f"Card: <code>{card_number}|{month}|{year}|{cvv}</code>\n"
+    return f"Card: <code>{card_number}|{month}|{year}|{cvv}</code>"
 
-# ========= Delete after delay =========
+# ========== Delete After Delay ==========
 async def delete_after_delay(message):
     await asyncio.sleep(120)
     try:
@@ -39,7 +36,7 @@ async def delete_after_delay(message):
     except Exception as e:
         logging.warning(f"Error deleting message: {e}")
 
-# ========= /start Command in Private =========
+# ========== /start Command ==========
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message: Message):
     welcome_text = (
@@ -58,7 +55,7 @@ async def start_handler(client, message: Message):
         reply_markup=buttons
     )
 
-# ========= Handle "Get Group ID" Button =========
+# ========== "Get Group ID" Button ==========
 @app.on_callback_query(filters.regex("get_group_id"))
 async def handle_get_group_id(client, callback_query):
     await callback_query.message.reply(
@@ -73,7 +70,7 @@ async def handle_get_group_id(client, callback_query):
         parse_mode=ParseMode.HTML
     )
 
-# ========= Group ID Submission (from user) =========
+# ========== Group ID Submission ==========
 @app.on_message(filters.private & filters.regex(r"-100\d{10,}"))
 async def receive_group_id(client, message: Message):
     group_id = message.text.strip()
@@ -82,7 +79,6 @@ async def receive_group_id(client, message: Message):
     username = f"@{user.username}" if user.username else "No username"
     current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
-    # User confirmation
     await message.reply(
         f"📩 <b>Chat Submission Received</b>\n\n"
         f"🆔 ID: <code>{group_id}</code>\n"
@@ -92,18 +88,17 @@ async def receive_group_id(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
-    # Notify Admin
     await client.send_message(
         ADMIN_ID,
         f"📩 <b>New Group Submission</b>\n"
         f"👤 From: {username}\n"
         f"🕒 Time: {current_time}\n"
         f"🆔 ID: <code>{group_id}</code>\n"
-        f"📊 Total Target Channels: {len(target_channels)}",
+        f"📊 Total Target Channels: {len(TARGET_CHANNELS)}",
         parse_mode=ParseMode.HTML
     )
 
-# ========= Monitor Source Groups =========
+# ========== CC Scraper ==========
 @app.on_message(filters.chat(SOURCE_GROUPS))
 async def cc_scraper(client, message: Message):
     text = message.text or message.caption
@@ -111,39 +106,80 @@ async def cc_scraper(client, message: Message):
     if not cards:
         return
 
-    for cc in cards:
-        msg_text = format_card_message(cc)
-        for channel in target_channels:
-            try:
-                sent = await app.send_message(channel, msg_text, parse_mode=ParseMode.HTML)
-                asyncio.create_task(delete_after_delay(sent))
-            except Exception as e:
-                logging.warning(f"Error sending/deleting message in {channel}: {e}")
+    msg_text = "\n".join([format_card_message(cc) for cc in cards])
 
-# ========= Admin Commands =========
+    for channel in TARGET_CHANNELS:
+        try:
+            if message.photo:
+                sent = await app.send_photo(
+                    channel,
+                    photo=message.photo.file_id,
+                    caption=msg_text,
+                    parse_mode=ParseMode.HTML
+                )
+            elif message.document:
+                sent = await app.send_document(
+                    channel,
+                    document=message.document.file_id,
+                    caption=msg_text,
+                    parse_mode=ParseMode.HTML
+                )
+            elif message.video:
+                sent = await app.send_video(
+                    channel,
+                    video=message.video.file_id,
+                    caption=msg_text,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                sent = await app.send_message(
+                    channel,
+                    msg_text,
+                    parse_mode=ParseMode.HTML
+                )
+            asyncio.create_task(delete_after_delay(sent))
+        except Exception as e:
+            logging.warning(f"Error sending message to {channel}: {e}")
+
+# ========== Admin Commands ==========
 @app.on_message(filters.command(["add_target", "remove_target", "list_chats", "contact", "admin"]) & filters.user(ADMIN_ID))
 async def admin_commands(client, message: Message):
     cmd = message.command
     if cmd[0] == "add_target" and len(cmd) > 1:
         try:
             chat_id = int(cmd[1])
-            target_channels.add(chat_id)
-            await message.reply(f"✅ Chat ID {chat_id} added to targets.")
-        except:
-            await message.reply("❌ Invalid Chat ID.")
+            if chat_id not in TARGET_CHANNELS:
+                TARGET_CHANNELS.add(chat_id)
+                await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
+
+                # Notify the new target channel
+                try:
+                    await client.send_message(
+                        chat_id,
+                        "🛡️ This channel has been added to receive CC data."
+                    )
+                except Exception as notify_err:
+                    await message.reply(f"⚠️ Added but could not notify target: {notify_err}")
+            else:
+                await message.reply("ℹ️ This chat is already in the target list.")
+        except Exception as e:
+            await message.reply(f"❌ Invalid Chat ID.\nError: {e}")
+
     elif cmd[0] == "remove_target" and len(cmd) > 1:
         try:
             chat_id = int(cmd[1])
-            target_channels.discard(chat_id)
-            await message.reply(f"🗑 Chat ID {chat_id} removed from targets.")
+            TARGET_CHANNELS.discard(chat_id)
+            await message.reply(f"🗑 Removed <code>{chat_id}</code> from target channels.", parse_mode=ParseMode.HTML)
         except:
             await message.reply("❌ Invalid Chat ID.")
+
     elif cmd[0] == "list_chats":
-        if target_channels:
-            chats = "\n".join([f"- <code>{chat}</code>" for chat in target_channels])
+        if TARGET_CHANNELS:
+            chats = "\n".join([f"- <code>{chat}</code>" for chat in TARGET_CHANNELS])
             await message.reply(f"📋 Target Channels:\n{chats}", parse_mode=ParseMode.HTML)
         else:
             await message.reply("⚠️ No target channels.")
+
     elif cmd[0] == "contact" and len(cmd) > 2:
         user_id = int(cmd[1])
         text = " ".join(cmd[2:])
@@ -152,6 +188,7 @@ async def admin_commands(client, message: Message):
             await message.reply("✅ Message sent to user.")
         except Exception as e:
             await message.reply(f"❌ Failed to send message: {e}")
+
     elif cmd[0] == "admin":
         await message.reply(
             "🛠 <b>Admin Commands:</b>\n\n"
@@ -162,6 +199,6 @@ async def admin_commands(client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
-# ========== Bot Run ==========
+# ========== Start Bot ==========
 print("✅ Bot is running. Press Ctrl+C to stop.")
 app.run()
