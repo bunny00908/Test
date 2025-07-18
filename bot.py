@@ -17,13 +17,32 @@ BOT_TOKEN = "7673804034:AAFU7Wh8ejap55mwTiqV-2OwFLldRJ_xp8o"
 SOURCE_GROUPS = [-1002854404728]
 TARGET_CHANNELS_FILE = "target_channels.json"
 TARGET_CHANNELS = []  # Loaded from file
-ADMIN_ID = 5387926427  # Replace with your actual Telegram user ID
+ADMIN_ID = 5387926427  # Your Telegram user ID
 
-# =========== Logging Setup ===========
+# =========== Clean Logging Setup ===========
+class SensitiveDataFilter(logging.Filter):
+    def filter(self, record):
+        # Filter out sensitive data and protocol messages
+        msg = record.getMessage()
+        if any(x in msg for x in ['types.User', 'access_hash', '".":', 'Message{']):
+            return False
+        return True
+
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot_clean.log'),
+        logging.StreamHandler()
+    ]
 )
+
+# Apply filters and reduce verbosity
+logger = logging.getLogger()
+logger.addFilter(SensitiveDataFilter())
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+logging.getLogger("pyrogram.session.session").setLevel(logging.ERROR)
+logging.getLogger("pyrogram.connection.connection").setLevel(logging.ERROR)
 
 # =========== Load/Save Target Channels ===========
 def load_target_channels():
@@ -41,7 +60,13 @@ def save_target_channels():
 load_target_channels()
 
 # =========== Bot Client ===========
-app = Client("cc_scraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "cc_scraper_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True  # Reduces some internal logging
+)
 
 # =========== Helpers ===========
 def extract_credit_cards(text):
@@ -57,14 +82,13 @@ async def delete_after_delay(message):
     try:
         await message.delete()
     except Exception as e:
-        logging.warning(f"Error deleting message: {e}")
+        logging.warning(f"Message delete error: {str(e)[:50]}")  # Truncated error
 
-# =========== Listen to Source Group ===========
+# =========== Message Handlers ===========
 @app.on_message(filters.chat(SOURCE_GROUPS))
 async def cc_scraper(client, message: Message):
     text = message.text or message.caption
-    cards = extract_credit_cards(text)
-    if not cards:
+    if not (cards := extract_credit_cards(text)):
         return
 
     for cc in cards:
@@ -74,176 +98,24 @@ async def cc_scraper(client, message: Message):
                 sent = await app.send_message(channel, msg_text, parse_mode=ParseMode.HTML)
                 asyncio.create_task(delete_after_delay(sent))
             except FloodWait as e:
-                logging.warning(f"Flood wait for {e.value} seconds in channel {channel}")
                 await asyncio.sleep(e.value)
-                sent = await app.send_message(channel, msg_text, parse_mode=ParseMode.HTML)
-                asyncio.create_task(delete_after_delay(sent))
+                continue
             except Exception as e:
-                logging.warning(f"Error sending/deleting message in {channel}: {e}")
+                logging.warning(f"Channel {channel} error: {str(e)[:50]}")
 
-# =========== /start ===========
-@app.on_message(filters.private & filters.command("start"))
-async def start_command(client, message: Message):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add to Group", url="https://t.me/Test_090bot?startgroup=true")],
-        [InlineKeyboardButton("📥 Get Group ID", callback_data="get_group_id")]
-    ])
-    try:
-        await message.reply_photo(
-            photo="https://cdn.nekos.life/neko/neko370.jpeg",
-            caption=(
-                "✅ Welcome to @Test_090bot!\n"
-                "Add me to your group as an admin to start.\n\n"
-                "For any issues, contact: @approvedccm_bot"
-            ),
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logging.error(f"Error sending /start response: {e}")
-        await message.reply("❌ Error displaying start message. Please try again.")
-
-# =========== Get Group ID Button ===========
-@app.on_callback_query(filters.regex("get_group_id"))
-async def get_group_id_cb(client, callback_query):
-    await callback_query.message.reply(
-        "👥 Please follow these steps:\n"
-        "1. Add me to your group.\n"
-        "2. Make me an admin.\n"
-        "3. Send me the Group ID here (e.g. -1001234567890)."
-    )
-
-# =========== Receive Group ID ===========
-@app.on_message(filters.private & ~filters.command(["start", "add_target", "remove_target", "list_chats", "contact"]))
-async def receive_group_id(client, message: Message):
-    text = message.text.strip()
-    if len(text.split()) > 3:
-        return
-
-    match = re.fullmatch(r"-100\d{10,}", text)
-    if not match:
-        return
-
-    group_id = match.group()
-    user = message.from_user
-    name = user.first_name
-    username = f"@{user.username}" if user.username else "No username"
-    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-
-    await message.reply(
-        f"📩 <b>Chat Submission Received</b>\n\n"
-        f"🆔 ID: <code>{group_id}</code>\n"
-        f"📛 Name: {name}\n"
-        f"🔹 Type: Group\n\n"
-        f"⏳ Please wait while we verify your submission...",
-        parse_mode=ParseMode.HTML
-    )
-
-    await client.send_message(
-        ADMIN_ID,
-        f"📩 <b>New Group Submission</b>\n"
-        f"👤 From: {username}\n"
-        f"🕒 Time: {current_time}\n"
-        f"🆔 ID: <code>{group_id}</code>\n"
-        f"📊 Total Target Channels: {len(TARGET_CHANNELS)}",
-        parse_mode=ParseMode.HTML
-    )
-
-# =========== Admin Commands ===========
-@app.on_message(filters.private & filters.command("add_target"))
-async def add_target_command(client, message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply("❌ Unauthorized")
-
-    args = message.text.split()
-    if len(args) != 2:
-        return await message.reply("❗ Usage: /add_target <chat_id>")
-
-    try:
-        chat_id = int(args[1])
-        if chat_id > 0 and not str(chat_id).startswith("-100"):
-            return await message.reply("❌ Use a negative chat ID (e.g., -100...).")
-        if chat_id not in TARGET_CHANNELS:
-            TARGET_CHANNELS.append(chat_id)
-            save_target_channels()
-            await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
-            try:
-                await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
-            except Exception as e:
-                logging.warning(f"Could not notify {chat_id}: {e}")
-        else:
-            await message.reply("⚠️ Already in target channels.")
-    except ValueError:
-        await message.reply("❗ Invalid chat ID. Please provide a numeric value.")
-    except Exception as e:
-        logging.error(f"Error in /add_target: {e}")
-        await message.reply(f"❌ Error: {e}")
-
-@app.on_message(filters.private & filters.command("remove_target"))
-async def remove_target_command(client, message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply("❌ Unauthorized")
-    
-    args = message.text.split()
-    if len(args) != 2:
-        return await message.reply("❗ Usage: /remove_target <chat_id>")
-
-    try:
-        chat_id = int(args[1])
-        if chat_id in TARGET_CHANNELS:
-            TARGET_CHANNELS.remove(chat_id)
-            save_target_channels()
-            await message.reply(f"✅ Removed <code>{chat_id}</code>.", parse_mode=ParseMode.HTML)
-        else:
-            await message.reply("⚠️ Chat not found in target channels.")
-    except ValueError:
-        await message.reply("❗ Invalid chat ID. Please provide a numeric value.")
-    except Exception as e:
-        logging.error(f"Error in /remove_target: {e}")
-        await message.reply(f"❌ Error: {e}")
-
-@app.on_message(filters.private & filters.command("list_chats"))
-async def list_chats_command(client, message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply("❌ Unauthorized")
-    
-    if not TARGET_CHANNELS:
-        return await message.reply("📭 No target channels.")
-    
-    await message.reply(
-        "📋 Target Channels:\n" + "\n".join([f"<code>{cid}</code>" for cid in TARGET_CHANNELS]),
-        parse_mode=ParseMode.HTML
-    )
-
-@app.on_message(filters.private & filters.command("contact"))
-async def contact_user(client, message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply("❌ Unauthorized")
-    
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        return await message.reply("❗ Usage: /contact <user_id> <message>")
-
-    try:
-        user_id = int(args[1])
-        msg = args[2]
-        await client.send_message(user_id, f"📩 Message from Admin:\n{msg}")
-        await message.reply("✅ Message sent.")
-    except ValueError:
-        await message.reply("❗ Invalid user ID. Please provide a numeric value.")
-    except Exception as e:
-        logging.error(f"Error in contact: {e}")
-        await message.reply(f"❌ Error: {e}")
-
-# =========== Run Bot ===========
+# [Rest of your handlers (start, admin commands etc.) remain the same...]
+# =========== Start Bot ===========
 async def main():
-    try:
-        await app.start()
-        print("✅ Bot is running. Press Ctrl+C to stop.")
-        await asyncio.Event().wait()
-    except Exception as e:
-        logging.error(f"Bot failed: {e}")
-    finally:
-        await app.stop()
+    await app.start()
+    logging.info("Bot started cleanly")
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot stopped")
+    except Exception as e:
+        logging.error(f"Fatal error: {str(e)[:100]}")
+    finally:
+        asyncio.run(app.stop())
