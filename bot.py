@@ -12,23 +12,24 @@ API_HASH = "82e6373f14a917289086553eefc64afe"
 BOT_TOKEN = "7673804034:AAFU7Wh8ejap55mwTiqV-2OwFLldRJ_xp8o"
 
 SOURCE_GROUPS = [-1002854404728]
-TARGET_CHANNELS = set([])
-ADMIN_ID = 5387926427  # Replace with your own Telegram user ID
+TARGET_CHANNELS = []  # Dynamically add via /add_target
+
+ADMIN_ID = 5387926427  # Your Telegram numeric user ID
 # =====================================
 
 logging.basicConfig(level=logging.INFO)
 app = Client("cc_scraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ========= Extract CCs =========
+# ========== Extract CCs ==========
 def extract_credit_cards(text):
     pattern = r'(\d{13,19})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})'
     return re.findall(pattern, text or "")
 
 def format_card_message(cc):
     card_number, month, year, cvv = cc
-    return f"Card: <code>{card_number}|{month}|{year}|{cvv}</code>"
+    return f"Card: <code>{card_number}|{month}|{year}|{cvv}</code>\n"
 
-# ========= Auto Delete =========
+# ========== Delete after delay ==========
 async def delete_after_delay(message):
     await asyncio.sleep(120)
     try:
@@ -36,55 +37,76 @@ async def delete_after_delay(message):
     except Exception as e:
         logging.warning(f"Error deleting message: {e}")
 
-# ========= /start in private =========
+# ========== Listen to Source Group ==========
+@app.on_message(filters.chat(SOURCE_GROUPS))
+async def cc_scraper(client, message: Message):
+    text = message.text or message.caption
+    cards = extract_credit_cards(text)
+    if not cards:
+        return
+
+    for cc in cards:
+        msg_text = format_card_message(cc)
+        for channel in TARGET_CHANNELS:
+            try:
+                sent = await app.send_message(
+                    channel,
+                    msg_text,
+                    parse_mode=ParseMode.HTML
+                )
+                asyncio.create_task(delete_after_delay(sent))
+            except Exception as e:
+                logging.warning(f"Error sending/deleting message in {channel}: {e}")
+
+# ========== /start Command (Private Only) ==========
 @app.on_message(filters.private & filters.command("start"))
-async def start_handler(client, message: Message):
+async def start_command(client, message: Message):
     welcome_text = (
-        "✅ <b>Welcome to @Test_090bot!</b>\n"
-        "Add me to your group as an <b>admin</b> to start.\n\n"
+        "✅ Welcome to @Test_090bot!\n"
+        "Add me to your group as an admin to start.\n\n"
         "For any issues, contact: @approvedccm_bot"
     )
-    buttons = InlineKeyboardMarkup([
+    keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add to Group", url="https://t.me/Test_090bot?startgroup=true")],
         [InlineKeyboardButton("📥 Get Group ID", callback_data="get_group_id")]
     ])
     await message.reply_photo(
-        "https://cdn.nekos.life/neko/neko370.jpeg",
+        photo="https://cdn.nekos.life/neko/neko370.jpeg",
         caption=welcome_text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=buttons
+        reply_markup=keyboard
     )
 
-# ========= Group ID button guide =========
+# ========== Button Callback ==========
 @app.on_callback_query(filters.regex("get_group_id"))
-async def handle_get_group_id(client, callback_query):
+async def get_group_id_cb(client, callback_query):
     await callback_query.message.reply(
-        "👥 <b>Please follow these steps:</b>\n"
+        "👥 Please follow these steps:\n"
         "1. Add me to your group.\n"
         "2. Make me an admin.\n"
         "3. Send me the Group ID here (just paste it in this chat).\n"
         "4. (Optional) Provide the channel link for verification.\n\n"
-        "<b>To get your Group ID</b>, go to your group and send the <code>/id</code> command, "
-        "then copy the ID and send it here.\n\n"
-        "For any issues, contact: @approvedccm_bot",
-        parse_mode=ParseMode.HTML
+        "To get your Group ID, go to your group and send the /id command, then copy the ID and send it here.\n\n"
+        "For any issues, contact: @approvedccm_bot"
     )
 
-# ========= Handle group ID submission =========
+# ========== Receive Group ID (Only Plain IDs) ==========
 @app.on_message(filters.private)
 async def receive_group_id(client, message: Message):
     text = message.text.strip()
-    match = re.search(r"-100\d{10,}", text)
-    if not match:
-        return  # Ignore if no valid group ID
-    group_id = match.group()
 
+    if text.startswith("/") or len(text.split()) > 3:
+        return
+
+    match = re.fullmatch(r"-100\d{10,}", text)
+    if not match:
+        return
+
+    group_id = match.group()
     user = message.from_user
     name = user.first_name
     username = f"@{user.username}" if user.username else "No username"
     current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
-    # Reply to user
     await message.reply(
         f"📩 <b>Chat Submission Received</b>\n\n"
         f"🆔 ID: <code>{group_id}</code>\n"
@@ -94,7 +116,6 @@ async def receive_group_id(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
-    # Notify admin
     await client.send_message(
         ADMIN_ID,
         f"📩 <b>New Group Submission</b>\n"
@@ -105,104 +126,73 @@ async def receive_group_id(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
-# ========= Monitor Source Group(s) =========
-@app.on_message(filters.chat(SOURCE_GROUPS))
-async def cc_scraper(client, message: Message):
-    text = message.text or message.caption
-    cards = extract_credit_cards(text)
-    if not cards:
-        return
+# ========== Admin Commands ==========
+@app.on_message(filters.private & filters.command("add_target"))
+async def add_target_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply("❌ Unauthorized")
 
-    msg_text = "\n".join([format_card_message(cc) for cc in cards])
+    args = message.text.split()
+    if len(args) != 2:
+        return await message.reply("Usage: /add_target <chat_id>")
 
-    for channel in TARGET_CHANNELS:
-        try:
-            if message.photo:
-                sent = await app.send_photo(
-                    channel,
-                    photo=message.photo.file_id,
-                    caption=msg_text,
-                    parse_mode=ParseMode.HTML
-                )
-            elif message.document:
-                sent = await app.send_document(
-                    channel,
-                    document=message.document.file_id,
-                    caption=msg_text,
-                    parse_mode=ParseMode.HTML
-                )
-            elif message.video:
-                sent = await app.send_video(
-                    channel,
-                    video=message.video.file_id,
-                    caption=msg_text,
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                sent = await app.send_message(
-                    channel,
-                    msg_text,
-                    parse_mode=ParseMode.HTML
-                )
-            asyncio.create_task(delete_after_delay(sent))
-        except Exception as e:
-            logging.warning(f"Error sending to {channel}: {e}")
-
-# ========= Admin Commands =========
-@app.on_message(filters.command(["add_target", "remove_target", "list_chats", "contact", "admin"]) & filters.user(ADMIN_ID))
-async def admin_commands(client, message: Message):
-    cmd = message.command
-    if cmd[0] == "add_target" and len(cmd) > 1:
-        try:
-            chat_id = int(cmd[1])
-            if chat_id not in TARGET_CHANNELS:
-                TARGET_CHANNELS.add(chat_id)
-                await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
-
-                # Notify target channel
-                try:
-                    await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
-                except Exception as notify_err:
-                    await message.reply(f"⚠️ Added but could not notify target: {notify_err}")
-            else:
-                await message.reply("ℹ️ This chat is already in the target list.")
-        except Exception as e:
-            await message.reply(f"❌ Invalid Chat ID.\nError: {e}")
-
-    elif cmd[0] == "remove_target" and len(cmd) > 1:
-        try:
-            chat_id = int(cmd[1])
-            TARGET_CHANNELS.discard(chat_id)
-            await message.reply(f"🗑 Removed <code>{chat_id}</code> from target channels.", parse_mode=ParseMode.HTML)
-        except:
-            await message.reply("❌ Invalid Chat ID.")
-
-    elif cmd[0] == "list_chats":
-        if TARGET_CHANNELS:
-            chats = "\n".join([f"- <code>{chat}</code>" for chat in TARGET_CHANNELS])
-            await message.reply(f"📋 Target Channels:\n{chats}", parse_mode=ParseMode.HTML)
+    try:
+        chat_id = int(args[1])
+        if chat_id not in TARGET_CHANNELS:
+            TARGET_CHANNELS.append(chat_id)
+            await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
+            await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
         else:
-            await message.reply("⚠️ No target channels.")
+            await message.reply("⚠️ Already in target channels.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
 
-    elif cmd[0] == "contact" and len(cmd) > 2:
-        user_id = int(cmd[1])
-        text = " ".join(cmd[2:])
-        try:
-            await client.send_message(user_id, f"📬 Message from Admin:\n\n{text}")
-            await message.reply("✅ Message sent to user.")
-        except Exception as e:
-            await message.reply(f"❌ Failed to send message: {e}")
+@app.on_message(filters.private & filters.command("remove_target"))
+async def remove_target_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply("❌ Unauthorized")
 
-    elif cmd[0] == "admin":
-        await message.reply(
-            "🛠 <b>Admin Commands:</b>\n\n"
-            "/add_target [chat_id] - Add target chat\n"
-            "/remove_target [chat_id] - Remove target chat\n"
-            "/list_chats - List all monitored chats\n"
-            "/contact [user_id] [message] - Contact user",
-            parse_mode=ParseMode.HTML
-        )
+    args = message.text.split()
+    if len(args) != 2:
+        return await message.reply("Usage: /remove_target <chat_id>")
 
-# ========= Start the Bot =========
+    try:
+        chat_id = int(args[1])
+        if chat_id in TARGET_CHANNELS:
+            TARGET_CHANNELS.remove(chat_id)
+            await message.reply(f"✅ Removed <code>{chat_id}</code> from target channels.", parse_mode=ParseMode.HTML)
+        else:
+            await message.reply("⚠️ Chat ID not found in target channels.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+
+@app.on_message(filters.private & filters.command("list_chats"))
+async def list_chats_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply("❌ Unauthorized")
+
+    if not TARGET_CHANNELS:
+        return await message.reply("📭 No target channels configured.")
+
+    await message.reply("📋 Target Channels:\n" + "\n".join([f"- <code>{cid}</code>" for cid in TARGET_CHANNELS]), parse_mode=ParseMode.HTML)
+
+@app.on_message(filters.private & filters.command("contact"))
+async def contact_user(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply("❌ Unauthorized")
+
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        return await message.reply("Usage: /contact <user_id> <message>")
+
+    try:
+        user_id = int(args[1])
+        msg = args[2]
+        await client.send_message(user_id, f"📩 Message from Admin:\n{msg}")
+        await message.reply("✅ Sent.")
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+
+# ========== Run the Bot ==========
 print("✅ Bot is running. Press Ctrl+C to stop.")
 app.run()
