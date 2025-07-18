@@ -87,7 +87,7 @@ For any issues, contact: {SUPPORT_USERNAME}"""
 @app.on_message(filters.command("admin"))
 async def admin_commands(client, message: Message):
     if message.from_user.id != ADMIN_ID:
-        return  # Don't reply to non-admin users
+        return
     
     admin_help = """🛠 <b>Admin Commands:</b>
 
@@ -96,9 +96,7 @@ async def admin_commands(client, message: Message):
 /remove_source [chat_id] - Remove source chat
 /remove_target [chat_id] - Remove target chat
 /list_chats - List all monitored chats
-/contact [user_id] [message] - Contact user
-/approve [chat_id] - Approve a chat
-/reject [chat_id] - Reject a chat"""
+/contact [user_id] [message] - Contact user"""
 
     await message.reply(admin_help, parse_mode=ParseMode.HTML)
 
@@ -126,44 +124,7 @@ async def handle_chat_id_submission(client, message: Message):
                 await message.reply(f"⚠️ I'm not in that group or not admin. Error: {str(e)}")
                 return
         
-        submission_message = (
-            f"📩 New Group Submission:\n"
-            f"👤 From: @{message.from_user.username or message.from_user.id}\n"
-            f"🆔 ID: <code>{chat.id}</code>\n"
-            f"📛 Name: {chat.title}\n"
-            f"🔗 Link: t.me/{chat.username}" if chat.username else "No username"
-        )
-        
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Approve", callback_data=f"approve_{chat.id}"),
-                InlineKeyboardButton("Reject", callback_data=f"reject_{chat.id}")
-            ]
-        ])
-        
-        await client.send_message(
-            ADMIN_ID,
-            submission_message,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML
-        )
-        
-        await message.reply(
-            "✅ Your group has been submitted for approval. Please wait for admin verification.",
-            parse_mode=ParseMode.HTML
-        )
-        
-    except ValueError:
-        await message.reply("⚠️ Please send only the numeric Group ID")
-    except Exception as e:
-        await message.reply(f"⚠️ Error processing your submission: {str(e)}")
-
-@app.on_callback_query(filters.regex(r"^(approve|reject)_(\-?\d+)$"))
-async def handle_approval(client, callback_query):
-    action, chat_id = callback_query.data.split("_")
-    chat_id = int(chat_id)
-    
-    if action == "approve":
+        # Add directly to source and target chats without approval
         if chat_id not in SOURCE_CHATS:
             SOURCE_CHATS.append(chat_id)
             save_source_chats()
@@ -171,29 +132,33 @@ async def handle_approval(client, callback_query):
             TARGET_CHATS.append(chat_id)
             save_target_chats()
         
-        try:
-            await client.send_message(
-                callback_query.from_user.id,
-                f"✅ Your group (ID: <code>{chat_id}</code>) has been approved!\n\n"
-                "I will now monitor this group for credit card information.",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
-            
-        await callback_query.answer("Group approved and added to both source and target lists.")
-    else:
-        try:
-            await client.send_message(
-                callback_query.from_user.id,
-                f"❌ Your group (ID: <code>{chat_id}</code>) has been rejected.\n\n"
-                f"Please contact {SUPPORT_USERNAME} for more information.",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
-            
-        await callback_query.answer("Group rejected.")
+        # Send confirmation to user
+        await message.reply(
+            "👥 Please follow these steps:\n\n"
+            "1. Add me to your group\n"
+            "2. Make me an admin\n"
+            "3. Send me the Group ID here (just paste it in this chat)\n"
+            "4. (Optional) Provide the channel link for verification\n\n"
+            "To get your Group ID, go to your group and send the /id command, then copy the ID and send it here.\n\n"
+            f"For any issues, contact: {SUPPORT_USERNAME}",
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Notify admin
+        await client.send_message(
+            ADMIN_ID,
+            f"📩 New Group Submission:\n"
+            f"👤 From: @{message.from_user.username or message.from_user.id}\n"
+            f"🆔 ID: <code>{chat.id}</code>\n"
+            f"📊 Source Groups: {len(SOURCE_CHATS)}\n"
+            f"📊 Target Groups: {len(TARGET_CHATS)}",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except ValueError:
+        await message.reply("⚠️ Please send only the numeric Group ID")
+    except Exception as e:
+        await message.reply(f"⚠️ Error processing your submission: {str(e)}")
 
 @app.on_message(filters.command("contact") & filters.user(ADMIN_ID))
 async def contact_user(client, message: Message):
