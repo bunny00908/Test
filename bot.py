@@ -9,11 +9,11 @@ from pyrogram.enums import ParseMode
 # =========== CONFIGURATION ===========
 API_ID = 28232616
 API_HASH = "82e6373f14a917289086553eefc64afe"
-BOT_TOKEN = "7673601198:AAGDRX0298e0z0_xh6UP7qFfg9lZyxLoBO8"
+BOT_TOKEN = "7673804034:AAFU7Wh8ejap55mwTiqV-2OwFLldRJ_xp8o"
 
 SOURCE_GROUPS = [-1002854404728]
 TARGET_CHANNELS = []
-ADMIN_ID = 7977271397  # Replace with your Telegram numeric user ID
+ADMIN_ID = 5387926427  # Replace with your Telegram numeric user ID
 # =====================================
 
 logging.basicConfig(level=logging.INFO)
