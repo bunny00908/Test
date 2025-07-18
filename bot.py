@@ -129,23 +129,27 @@ async def receive_group_id(client, message: Message):
 # ========== Admin Commands ==========
 @app.on_message(filters.private & filters.command("add_target"))
 async def add_target_command(client, message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply("❌ Unauthorized")
-
-    args = message.text.split()
-    if len(args) != 2:
-        return await message.reply("Usage: /add_target <chat_id>")
-
     try:
+        if message.from_user.id != ADMIN_ID:
+            return await message.reply("❌ Unauthorized")
+
+        args = message.text.split()
+        if len(args) != 2:
+            return await message.reply("❗ Usage: /add_target <chat_id>")
+
         chat_id = int(args[1])
         if chat_id not in TARGET_CHANNELS:
             TARGET_CHANNELS.append(chat_id)
             await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
-            await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
+            try:
+                await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
+            except Exception as send_error:
+                await message.reply(f"⚠️ Could not send confirmation to target: {send_error}")
         else:
             await message.reply("⚠️ Already in target channels.")
+
     except Exception as e:
-        await message.reply(f"❌ Error: {e}")
+        await message.reply(f"❌ Error occurred: {e}")
 
 @app.on_message(filters.private & filters.command("remove_target"))
 async def remove_target_command(client, message: Message):
