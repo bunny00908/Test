@@ -3,7 +3,7 @@ import asyncio
 import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatMemberStatus
 
 # =========== CONFIGURATION ===========
 API_ID = 28232616
@@ -20,9 +20,6 @@ WELCOME_IMAGE = "https://cdn.nekos.life/neko/neko370.jpeg"
 logging.basicConfig(level=logging.INFO)
 app = Client("cc_scraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Store pending group additions (group_id: user_id)
-pending_groups = {}
-
 # ========== Helper Functions ==========
 def extract_credit_cards(text):
     pattern = r'(\d{13,19})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})'
@@ -38,6 +35,13 @@ async def delete_after_delay(message, delay=120):
         await message.delete()
     except Exception as e:
         logging.warning(f"Error deleting message: {e}")
+
+async def is_bot_admin(chat_id):
+    try:
+        member = await app.get_chat_member(chat_id, "me")
+        return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except Exception:
+        return False
 
 # ========== Command Handlers ==========
 @app.on_message(filters.command("start"))
@@ -75,77 +79,76 @@ async def get_group_id_callback(client, callback_query):
 @app.on_message(filters.regex(r'^-?\d+$') & filters.private & ~filters.command(["start", "id"]))
 async def handle_group_id_submission(client, message: Message):
     group_id = int(message.text)
-    pending_groups[group_id] = message.from_user.id
     
     # Notify user
-    await message.reply("✅ Your group ID has been sent to the admin. Please wait for verification.")
+    await message.reply("✅ Your group ID has been sent to the admin. Please wait for manual approval.")
     
     # Notify admin
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{group_id}")],
-        [InlineKeyboardButton("❌ Reject", callback_data=f"reject_{group_id}")]
-    ])
-    
     await app.send_message(
         ADMIN_ID,
         f"📨 New group ID submission:\n\n"
         f"Group ID: <code>{group_id}</code>\n"
         f"Submitted by: {message.from_user.mention}\n"
-        f"User ID: <code>{message.from_user.id}</code>",
-        reply_markup=keyboard,
+        f"User ID: <code>{message.from_user.id}</code>\n\n"
+        f"To add this group, use:\n<code>/addgroup {group_id}</code>",
         parse_mode=ParseMode.HTML
     )
 
-# Admin approval callback
-@app.on_callback_query(filters.regex(r'^(approve|reject)_(-?\d+)$'))
-async def handle_admin_approval(client, callback_query):
-    action, group_id = callback_query.data.split('_')
-    group_id = int(group_id)
-    
-    if callback_query.from_user.id != ADMIN_ID:
-        await callback_query.answer("❌ You're not authorized!", show_alert=True)
+# Admin commands
+@app.on_message(filters.command("addgroup") & filters.user(ADMIN_ID))
+async def add_source_group(client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Usage: /addgroup <group_id>")
         return
     
-    if group_id not in pending_groups:
-        await callback_query.answer("❌ This group ID is no longer pending.", show_alert=True)
-        return
-    
-    user_id = pending_groups[group_id]
-    
-    if action == "approve":
+    try:
+        group_id = int(message.command[1])
         if group_id not in SOURCE_GROUPS:
             SOURCE_GROUPS.append(group_id)
-        await callback_query.answer("✅ Group approved!")
-        await callback_query.message.edit_text(f"✅ Approved group ID: {group_id}")
-        
-        # Notify user
-        try:
-            await app.send_message(
-                user_id,
-                f"🎉 Your group (<code>{group_id}</code>) has been approved by admin!\n\n"
-                "The bot will now monitor this group for credit cards.",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            logging.error(f"Error notifying user: {e}")
-    else:
-        await callback_query.answer("❌ Group rejected!")
-        await callback_query.message.edit_text(f"❌ Rejected group ID: {group_id}")
-        
-        # Notify user
-        try:
-            await app.send_message(
-                user_id,
-                f"❌ Your group (<code>{group_id}</code>) has been rejected by admin.\n\n"
-                "Please contact @approvedccm_bot for more information.",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            logging.error(f"Error notifying user: {e}")
-    
-    del pending_groups[group_id]
+            await message.reply(f"✅ Added source group: {group_id}")
+            
+            # Notify the group
+            try:
+                await app.send_message(
+                    group_id,
+                    "👋 This group has been approved by admin!\n\n"
+                    "The bot will now monitor this group for credit cards."
+                )
+            except Exception as e:
+                logging.error(f"Could not send message to group {group_id}: {e}")
+        else:
+            await message.reply(f"ℹ️ Group {group_id} is already in the source list.")
+    except ValueError:
+        await message.reply("❌ Invalid group ID. Please provide a numeric ID.")
 
-# Admin commands
+@app.on_message(filters.command("removegroup") & filters.user(ADMIN_ID))
+async def remove_source_group(client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Usage: /removegroup <group_id>")
+        return
+    
+    try:
+        group_id = int(message.command[1])
+        if group_id in SOURCE_GROUPS:
+            SOURCE_GROUPS.remove(group_id)
+            await message.reply(f"✅ Removed source group: {group_id}")
+        else:
+            await message.reply(f"ℹ️ Group {group_id} is not in the source list.")
+    except ValueError:
+        await message.reply("❌ Invalid group ID. Please provide a numeric ID.")
+
+@app.on_message(filters.command("listgroups") & filters.user(ADMIN_ID))
+async def list_source_groups(client, message: Message):
+    if not SOURCE_GROUPS:
+        await message.reply("❌ No source groups configured.")
+        return
+    
+    groups_list = "\n".join([f"• <code>{group_id}</code>" for group_id in SOURCE_GROUPS])
+    await message.reply(
+        f"📋 Source Groups ({len(SOURCE_GROUPS)}):\n\n{groups_list}",
+        parse_mode=ParseMode.HTML
+    )
+
 @app.on_message(filters.command("addchannel") & filters.user(ADMIN_ID))
 async def add_target_channel(client, message: Message):
     if len(message.command) < 2:
@@ -190,9 +193,57 @@ async def list_target_channels(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
+# Admin reply to user by ID
+@app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
+async def admin_reply(client, message: Message):
+    if len(message.command) < 3:
+        await message.reply("Usage: /reply <user_id> <message>")
+        return
+    
+    try:
+        user_id = int(message.command[1])
+        reply_text = " ".join(message.command[2:])
+        
+        try:
+            await app.send_message(user_id, reply_text)
+            await message.reply(f"✅ Message sent to user {user_id}")
+        except Exception as e:
+            await message.reply(f"❌ Failed to send message to user {user_id}: {e}")
+    except ValueError:
+        await message.reply("❌ Invalid user ID. Please provide a numeric ID.")
+
+# Admin announcement to all groups
+@app.on_message(filters.command("announce") & filters.user(ADMIN_ID))
+async def admin_announcement(client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Usage: /announce <message>")
+        return
+    
+    announcement = " ".join(message.command[1:])
+    success = 0
+    failed = 0
+    
+    for group_id in SOURCE_GROUPS:
+        try:
+            await app.send_message(group_id, f"📢 Admin Announcement:\n\n{announcement}")
+            success += 1
+        except Exception as e:
+            logging.error(f"Failed to send announcement to group {group_id}: {e}")
+            failed += 1
+    
+    await message.reply(
+        f"📢 Announcement Results:\n\n"
+        f"✅ Success: {success} groups\n"
+        f"❌ Failed: {failed} groups"
+    )
+
 # ========== Main CC Scraper ==========
 @app.on_message(filters.chat(SOURCE_GROUPS))
 async def cc_scraper(client, message: Message):
+    # Check if bot is admin in the group
+    if not await is_bot_admin(message.chat.id):
+        return  # Silently ignore if not admin
+    
     text = message.text or message.caption
     cards = extract_credit_cards(text)
     if not cards:
