@@ -12,14 +12,14 @@ API_HASH = "82e6373f14a917289086553eefc64afe"
 BOT_TOKEN = "7673804034:AAFU7Wh8ejap55mwTiqV-2OwFLldRJ_xp8o"
 
 SOURCE_GROUPS = [-1002854404728]
-TARGET_CHANNELS = {}  # Using set for easier management
-ADMIN_ID = 5387926427  # Your Telegram numeric user ID
+TARGET_CHANNELS = set([])
+ADMIN_ID = 5387926427  # Replace with your own Telegram user ID
 # =====================================
 
 logging.basicConfig(level=logging.INFO)
 app = Client("cc_scraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ========== CC Extractor ==========
+# ========= Extract CCs =========
 def extract_credit_cards(text):
     pattern = r'(\d{13,19})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})'
     return re.findall(pattern, text or "")
@@ -28,7 +28,7 @@ def format_card_message(cc):
     card_number, month, year, cvv = cc
     return f"Card: <code>{card_number}|{month}|{year}|{cvv}</code>"
 
-# ========== Delete After Delay ==========
+# ========= Auto Delete =========
 async def delete_after_delay(message):
     await asyncio.sleep(120)
     try:
@@ -36,7 +36,7 @@ async def delete_after_delay(message):
     except Exception as e:
         logging.warning(f"Error deleting message: {e}")
 
-# ========== /start Command ==========
+# ========= /start in private =========
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message: Message):
     welcome_text = (
@@ -55,7 +55,7 @@ async def start_handler(client, message: Message):
         reply_markup=buttons
     )
 
-# ========== "Get Group ID" Button ==========
+# ========= Group ID button guide =========
 @app.on_callback_query(filters.regex("get_group_id"))
 async def handle_get_group_id(client, callback_query):
     await callback_query.message.reply(
@@ -70,15 +70,21 @@ async def handle_get_group_id(client, callback_query):
         parse_mode=ParseMode.HTML
     )
 
-# ========== Group ID Submission ==========
-@app.on_message(filters.private & filters.regex(r"-100\d{10,}"))
+# ========= Handle group ID submission =========
+@app.on_message(filters.private)
 async def receive_group_id(client, message: Message):
-    group_id = message.text.strip()
+    text = message.text.strip()
+    match = re.search(r"-100\d{10,}", text)
+    if not match:
+        return  # Ignore if no valid group ID
+    group_id = match.group()
+
     user = message.from_user
     name = user.first_name
     username = f"@{user.username}" if user.username else "No username"
     current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
+    # Reply to user
     await message.reply(
         f"📩 <b>Chat Submission Received</b>\n\n"
         f"🆔 ID: <code>{group_id}</code>\n"
@@ -88,6 +94,7 @@ async def receive_group_id(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
+    # Notify admin
     await client.send_message(
         ADMIN_ID,
         f"📩 <b>New Group Submission</b>\n"
@@ -98,7 +105,7 @@ async def receive_group_id(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
-# ========== CC Scraper ==========
+# ========= Monitor Source Group(s) =========
 @app.on_message(filters.chat(SOURCE_GROUPS))
 async def cc_scraper(client, message: Message):
     text = message.text or message.caption
@@ -139,9 +146,9 @@ async def cc_scraper(client, message: Message):
                 )
             asyncio.create_task(delete_after_delay(sent))
         except Exception as e:
-            logging.warning(f"Error sending message to {channel}: {e}")
+            logging.warning(f"Error sending to {channel}: {e}")
 
-# ========== Admin Commands ==========
+# ========= Admin Commands =========
 @app.on_message(filters.command(["add_target", "remove_target", "list_chats", "contact", "admin"]) & filters.user(ADMIN_ID))
 async def admin_commands(client, message: Message):
     cmd = message.command
@@ -152,12 +159,9 @@ async def admin_commands(client, message: Message):
                 TARGET_CHANNELS.add(chat_id)
                 await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
 
-                # Notify the new target channel
+                # Notify target channel
                 try:
-                    await client.send_message(
-                        chat_id,
-                        "🛡️ This channel has been added to receive CC data."
-                    )
+                    await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
                 except Exception as notify_err:
                     await message.reply(f"⚠️ Added but could not notify target: {notify_err}")
             else:
@@ -199,6 +203,6 @@ async def admin_commands(client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
-# ========== Start Bot ==========
+# ========= Start the Bot =========
 print("✅ Bot is running. Press Ctrl+C to stop.")
 app.run()
