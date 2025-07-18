@@ -86,7 +86,7 @@ async def get_id(client, message: Message):
         parse_mode=ParseMode.HTML
     )
 
-@app.on_message(filters.private & ~filters.user(ADMIN_ID) & ~filters.command())
+@app.on_message(filters.private & ~filters.user(ADMIN_ID) & ~filters.command)
 async def handle_chat_id_submission(client, message: Message):
     if message.forward_from_chat:
         chat = message.forward_from_chat
