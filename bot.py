@@ -20,30 +20,37 @@ TARGET_CHANNELS = []  # Loaded from file
 ADMIN_ID = 5387926427  # Your Telegram numeric user ID
 
 # =========== Logging Setup ===========
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Load TARGET_CHANNELS from file
+# ========== Load & Save Channels ==========
 def load_target_channels():
     global TARGET_CHANNELS
     if os.path.exists(TARGET_CHANNELS_FILE):
-        with open(TARGET_CHANNELS_FILE, "r") as f:
+        with open(TARGET_CHANNELS_FILE, "r", encoding="utf-8") as f:
             TARGET_CHANNELS = json.load(f)
     else:
         TARGET_CHANNELS = []
 
 def save_target_channels():
-    with open(TARGET_CHANNELS_FILE, "w") as f:
+    with open(TARGET_CHANNELS_FILE, "w", encoding="utf-8") as f:
         json.dump(TARGET_CHANNELS, f)
 
-# Load channels at startup
 load_target_channels()
 
 app = Client("cc_scraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ========== Extract CCs ==========
+# ========== Safe Message Sender ==========
+async def safe_send(client, chat_id, *args, **kwargs):
+    try:
+        return await client.send_message(chat_id, *args, **kwargs)
+    except FloodWait as e:
+        logging.warning(f"Flood wait: {e.value} seconds")
+        await asyncio.sleep(e.value)
+        return await client.send_message(chat_id, *args, **kwargs)
+    except Exception as e:
+        logging.error(f"Send error to {chat_id}: {e}")
+
+# ========== Extract Credit Cards ==========
 def extract_credit_cards(text):
     pattern = r'(\d{13,19})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})'
     return re.findall(pattern, text or "")
@@ -52,7 +59,7 @@ def format_card_message(cc):
     card_number, month, year, cvv = cc
     return f"Card: <code>{card_number}|{month}|{year}|{cvv}</code>\n"
 
-# ========== Delete after delay ==========
+# ========== Delete After Delay ==========
 async def delete_after_delay(message):
     await asyncio.sleep(120)
     try:
@@ -60,7 +67,7 @@ async def delete_after_delay(message):
     except Exception as e:
         logging.warning(f"Error deleting message: {e}")
 
-# ========== Listen to Source Group ==========
+# ========== Source Group Listener ==========
 @app.on_message(filters.chat(SOURCE_GROUPS))
 async def cc_scraper(client, message: Message):
     text = message.text or message.caption
@@ -72,21 +79,13 @@ async def cc_scraper(client, message: Message):
         msg_text = format_card_message(cc)
         for channel in TARGET_CHANNELS:
             try:
-                sent = await app.send_message(
-                    channel,
-                    msg_text,
-                    parse_mode=ParseMode.HTML
-                )
-                asyncio.create_task(delete_after_delay(sent))
-            except FloodWait as e:
-                logging.warning(f"Flood wait for {e.value} seconds in channel {channel}")
-                await asyncio.sleep(e.value)
-                sent = await app.send_message(channel, msg_text, parse_mode=ParseMode.HTML)
-                asyncio.create_task(delete_after_delay(sent))
+                sent = await safe_send(app, channel, msg_text, parse_mode=ParseMode.HTML)
+                if sent:
+                    asyncio.create_task(delete_after_delay(sent))
             except Exception as e:
-                logging.warning(f"Error sending/deleting message in {channel}: {e}")
+                logging.warning(f"Failed in target {channel}: {e}")
 
-# ========== /start Command (Private Only) ==========
+# ========== /start ==========
 @app.on_message(filters.private & filters.command("start"))
 async def start_command(client, message: Message):
     welcome_text = (
@@ -105,31 +104,30 @@ async def start_command(client, message: Message):
             reply_markup=keyboard
         )
     except Exception as e:
-        logging.error(f"Error sending /start response: {e}")
-        await message.reply("❌ Error displaying start message. Please try again.")
+        logging.error(f"/start error: {e}")
+        await message.reply("❌ Error displaying start message.")
 
-# ========== Button Callback ==========
+# ========== Group ID Button ==========
 @app.on_callback_query(filters.regex("get_group_id"))
-async def get_group_id_cb(client, callback_query):
+async def get_group_id_cb(client, cb):
     try:
-        await callback_query.message.reply(
+        await cb.message.reply(
             "👥 Please follow these steps:\n"
             "1. Add me to your group.\n"
             "2. Make me an admin.\n"
-            "3. Send me the Group ID here (just paste it in this chat).\n"
-            "4. (Optional) Provide the channel link for verification.\n\n"
-            "To get your Group ID, go to your group and send the /id command, then copy the ID and send it here.\n\n"
-            "For any issues, contact: @approvedccm_bot"
+            "3. Send me the Group ID here.\n\n"
+            "Use /id in the group to get its ID.\n\n"
+            "For help: @approvedccm_bot"
         )
     except Exception as e:
-        logging.error(f"Error in get_group_id callback: {e}")
+        logging.error(f"Callback error: {e}")
 
-# ========== Receive Group ID (Only Plain IDs) ==========
+# ========== Receive Raw Group ID ==========
 @app.on_message(filters.private)
 async def receive_group_id(client, message: Message):
     text = message.text.strip()
 
-    if text.startswith("/") or len(text.split()) > 3:
+    if text.startswith("/") or len(text.split()) > 1:
         return
 
     match = re.fullmatch(r"-100\d{10,}", text)
@@ -137,8 +135,10 @@ async def receive_group_id(client, message: Message):
         return
 
     group_id = match.group()
+    if int(group_id) in TARGET_CHANNELS:
+        return await message.reply("⚠️ This group is already a target channel.")
+
     user = message.from_user
-    name = user.first_name
     username = f"@{user.username}" if user.username else "No username"
     current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
@@ -146,14 +146,12 @@ async def receive_group_id(client, message: Message):
         await message.reply(
             f"📩 <b>Chat Submission Received</b>\n\n"
             f"🆔 ID: <code>{group_id}</code>\n"
-            f"📛 Name: {name}\n"
+            f"📛 Name: {user.first_name}\n"
             f"🔹 Type: Group\n\n"
             f"⏳ Please wait while we verify your submission...",
             parse_mode=ParseMode.HTML
         )
-
-        await client.send_message(
-            ADMIN_ID,
+        await safe_send(client, ADMIN_ID,
             f"📩 <b>New Group Submission</b>\n"
             f"👤 From: {username}\n"
             f"🕒 Time: {current_time}\n"
@@ -162,13 +160,12 @@ async def receive_group_id(client, message: Message):
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logging.error(f"Error processing group ID submission: {e}")
-        await message.reply(f"❌ Error processing submission: {e}")
+        logging.error(f"Submission error: {e}")
+        await message.reply(f"❌ Error: {e}")
 
-# ========== Admin Commands ==========
+# ========== Admin: Add Target ==========
 @app.on_message(filters.private & filters.command("add_target"))
 async def add_target_command(client, message: Message):
-    logging.info(f"add_target command from User ID: {message.from_user.id}, Expected ADMIN_ID: {ADMIN_ID}")
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
 
@@ -179,31 +176,22 @@ async def add_target_command(client, message: Message):
     try:
         chat_id = int(args[1])
         if chat_id > 0:
-            return await message.reply("❌ Chat ID must be a negative number (e.g., -1001234567890).")
+            return await message.reply("❌ Chat ID must start with -100")
+
         if chat_id not in TARGET_CHANNELS:
             TARGET_CHANNELS.append(chat_id)
-            save_target_channels()  # Save to file
+            save_target_channels()
             await message.reply(f"✅ Added <code>{chat_id}</code> to target channels.", parse_mode=ParseMode.HTML)
-            try:
-                await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
-            except FloodWait as e:
-                logging.warning(f"Flood wait for {e.value} seconds in channel {chat_id}")
-                await asyncio.sleep(e.value)
-                await client.send_message(chat_id, "🛡️ This channel has been added to receive CC data.")
-            except Exception as send_error:
-                logging.error(f"Could not send confirmation to {chat_id}: {send_error}")
-                await message.reply(f"⚠️ Could not send confirmation to target: {send_error}")
+            await safe_send(client, chat_id, "🛡️ This channel has been added to receive CC data.")
         else:
             await message.reply("⚠️ Already in target channels.")
-    except ValueError:
-        await message.reply("❌ Invalid chat ID format. Use a numeric chat ID (e.g., -1001234567890).")
     except Exception as e:
-        logging.error(f"Error in add_target: {e}")
-        await message.reply(f"❌ Error occurred: {e}")
+        logging.error(f"Add error: {e}")
+        await message.reply(f"❌ Error: {e}")
 
+# ========== Admin: Remove Target ==========
 @app.on_message(filters.private & filters.command("remove_target"))
 async def remove_target_command(client, message: Message):
-    logging.info(f"remove_target command from User ID: {message.from_user.id}, Expected ADMIN_ID: {ADMIN_ID}")
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
 
@@ -215,33 +203,29 @@ async def remove_target_command(client, message: Message):
         chat_id = int(args[1])
         if chat_id in TARGET_CHANNELS:
             TARGET_CHANNELS.remove(chat_id)
-            save_target_channels()  # Save to file
+            save_target_channels()
             await message.reply(f"✅ Removed <code>{chat_id}</code> from target channels.", parse_mode=ParseMode.HTML)
         else:
-            await message.reply("⚠️ Chat ID not found in target channels.")
-    except ValueError:
-        await message.reply("❌ Invalid chat ID format.")
+            await message.reply("⚠️ Not in target channels.")
     except Exception as e:
-        logging.error(f"Error in remove_target: {e}")
+        logging.error(f"Remove error: {e}")
         await message.reply(f"❌ Error: {e}")
 
+# ========== Admin: List ==========
 @app.on_message(filters.private & filters.command("list_chats"))
 async def list_chats_command(client, message: Message):
-    logging.info(f"list_chats command from User ID: {message.from_user.id}, Expected ADMIN_ID: {ADMIN_ID}")
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
 
     if not TARGET_CHANNELS:
         return await message.reply("📭 No target channels configured.")
 
-    await message.reply(
-        "📋 Target Channels:\n" + "\n".join([f"- <code>{cid}</code>" for cid in TARGET_CHANNELS]),
-        parse_mode=ParseMode.HTML
-    )
+    msg = "📋 Target Channels:\n" + "\n".join([f"- <code>{cid}</code>" for cid in TARGET_CHANNELS])
+    await message.reply(msg, parse_mode=ParseMode.HTML)
 
+# ========== Admin: Contact User ==========
 @app.on_message(filters.private & filters.command("contact"))
 async def contact_user(client, message: Message):
-    logging.info(f"contact command from User ID: {message.from_user.id}, Expected ADMIN_ID: {ADMIN_ID}")
     if message.from_user.id != ADMIN_ID:
         return await message.reply("❌ Unauthorized")
 
@@ -252,27 +236,20 @@ async def contact_user(client, message: Message):
     try:
         user_id = int(args[1])
         msg = args[2]
-        await client.send_message(user_id, f"📩 Message from Admin:\n{msg}")
+        await safe_send(client, user_id, f"📩 Message from Admin:\n{msg}")
         await message.reply("✅ Sent.")
-    except ValueError:
-        await message.reply("❌ Invalid user ID format.")
-    except FloodWait as e:
-        logging.warning(f"Flood wait for {e.value} seconds for user {user_id}")
-        await asyncio.sleep(e.value)
-        await client.send_message(user_id, f"📩 Message from Admin:\n{msg}")
-        await message.reply("✅ Sent after flood wait.")
     except Exception as e:
-        logging.error(f"Error in contact: {e}")
+        logging.error(f"Contact error: {e}")
         await message.reply(f"❌ Error: {e}")
 
-# ========== Run the Bot ==========
+# ========== Run Bot ==========
 async def main():
     try:
         await app.start()
         print("✅ Bot is running. Press Ctrl+C to stop.")
         await app.idle()
     except Exception as e:
-        logging.error(f"Bot failed to start: {e}")
+        logging.error(f"Bot failed: {e}")
     finally:
         await app.stop()
 
